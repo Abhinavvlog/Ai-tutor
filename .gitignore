@@ -1,0 +1,56 @@
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+
+# Production
+dist
+build
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Supabase
+.supabase
+
+
+
+# Supabase CLI temporary files
+supabase/.temp/
+
+# Local development/test audio
+*.mp3
+*.wav
+*.pcm
+
+# Temporary debugging/fix scripts
+fix*.cjs
+fix.py
+ultimate.py
+ultimate2.py
+ultimate3.py
+update_*.cjs
+tutor-turn-original.ts
+tutor-turn-temp.ts
+scratch.ts
+test-overlap.js
+test-overlap2.js
