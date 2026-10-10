@@ -1,19 +1,20 @@
-import { StrictMode } from 'react'
+import { StrictMode, Suspense } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import './index.css'
-import { StartScreen } from './pages/StartScreen'
-import { TutorScreen } from './pages/TutorScreen'
-import { ProgressScreen } from './pages/ProgressScreen'
+import { Application } from './components/ApplicationLoader'
+import { ConfigurationRequired } from './pages/ConfigurationRequired'
+import { getSupabaseConfigurationError } from './lib/supabaseConfig'
+
+const configurationError = getSupabaseConfigurationError()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<StartScreen />} />
-        <Route path="/learn/:conceptId" element={<TutorScreen />} />
-        <Route path="/progress" element={<ProgressScreen />} />
-      </Routes>
-    </BrowserRouter>
+    {configurationError ? (
+      <ConfigurationRequired message={configurationError} />
+    ) : (
+      <Suspense fallback={<main className="min-h-screen p-8">Loading MyGuru...</main>}>
+        <Application />
+      </Suspense>
+    )}
   </StrictMode>,
 )

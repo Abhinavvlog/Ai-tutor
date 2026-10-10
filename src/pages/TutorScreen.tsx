@@ -13,6 +13,7 @@ export function TutorScreen() {
   const {
     sessionId,
     messages,
+    spokenTranscripts,
     board,
     citations,
     selectedCitation,
@@ -79,7 +80,7 @@ export function TutorScreen() {
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setInputText(e.target.value);
     // If the tutor is currently speaking audio, typing immediately silences the audio
-    if (isPlayingAudio) {
+    if (isPlayingAudio || loading) {
       interruptTutor();
     }
   };
@@ -280,7 +281,7 @@ export function TutorScreen() {
                     m.content
                   ) : (
                     <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
-                      {m.content}
+                      {spokenTranscripts[m.id] ?? m.content}
                     </ReactMarkdown>
                   )}
                   {m.isStreaming && <span className="inline-block animate-pulse ml-1">...</span>}
@@ -454,7 +455,9 @@ export function TutorScreen() {
                         remarkPlugins={[remarkMath]}
                         rehypePlugins={[rehypeKatex]}
                       >
-                        {msg.content}
+                        {msg.role === 'tutor'
+                          ? (spokenTranscripts[msg.id] ?? msg.content)
+                          : msg.content}
                       </ReactMarkdown>
                     </div>
                   </div>

@@ -25,9 +25,26 @@ describe('Classroom Interruption & Echo Cancellation', () => {
       expect(isLikelyTeacherEcho('locations in memory', teacherSpokenText)).toBe(true);
     });
 
+    it('ignores garbled partial transcripts of tutor speech instead of interrupting', () => {
+      expect(isLikelyTeacherEcho('are yah kaisi beta', 'Array ek data structure hai', true)).toBe(true);
+      expect(
+        isLikelyTeacherEcho(
+          'are yah kaisi beta',
+          "Arrey, don't worry at all, microphone sometimes picks up my own voice by mistake!",
+          true,
+        ),
+      ).toBe(true);
+    });
+
     it('allows genuine student questions that happen to share a word', () => {
       expect(isLikelyTeacherEcho('can memory be dynamic?', teacherSpokenText)).toBe(false);
       expect(isLikelyTeacherEcho('how many elements can it store?', teacherSpokenText)).toBe(false);
+    });
+
+    it('allows short resume confirmations that are not in the tutor audio', () => {
+      expect(isLikelyTeacherEcho('haan', 'Shall we continue from where we left off?', true)).toBe(false);
+      expect(isLikelyTeacherEcho('yes', 'Shall we continue from where we left off?', true)).toBe(false);
+      expect(isLikelyTeacherEcho('nahi', 'Shall we continue from where we left off?', true)).toBe(false);
     });
 
     it('handles empty or missing parameters gracefully', () => {

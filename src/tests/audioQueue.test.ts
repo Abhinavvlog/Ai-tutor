@@ -16,6 +16,7 @@ class MockAudioBufferSourceNode {
   buffer: any = null;
   onended: any = null;
   connectedTo: any = null;
+  playbackRate = { value: 1 };
   connect(dest: any) {
     this.connectedTo = dest;
   }

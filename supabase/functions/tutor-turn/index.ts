@@ -5,6 +5,7 @@ import { GoogleGenAI } from 'npm:@google/genai@2.27.0'
 import { determineNextMove, PedagogyState } from './logic/pedagogy.ts'
 import { updateMastery } from './logic/bkt.ts'
 import { checkNumeric, checkMcq } from './logic/answer_checker.ts'
+import { resolveResponseLanguage } from './logic/responseLanguage.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -19,6 +20,8 @@ const reqSchema = z.object({
   input_mode: z.enum(['text', 'voice']).default('text'),
   interrupted: z.boolean().default(false),
   interrupted_at: z.string().optional(),
+  resume_lesson: z.boolean().default(false),
+  resume_decision: z.enum(['continue', 'decline']).optional(),
   history: z.array(z.object({
     role: z.string(),
     content: z.string(),
@@ -148,15 +151,14 @@ async function fetchGeminiWithRetry(
 
       attempt++;
       const backoff = retryDelayMs > 0
-        [.!?à¥¤ã€‚]s|
+?
 retryDelayMs + Math.random() * 500
         : Math.pow(2, attempt) * 1000 + Math.random() * 500;
       await new Promise(r => setTimeout(r, backoff));
       continue;
     }
 
-    // Handle 5xx Transient Server Errors (e.g[.!?à¥¤ã€‚]s|
-503, 502)
+    // Handle 5xx transient server errors (e.g., 503 or 502).
     if (res.status >= 500 && res.status < 600) {
       if (attempt >= maxRetries) {
         return res;
@@ -179,11 +181,10 @@ Deno.serve(async (req) => {
 
   try {
     const supabaseClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?[.!?à¥¤ã€‚]s|
-'',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?[.!?à¥¤ã€‚]s|
-Deno.env.get('MYGURU_SUPABASE_SERVICE_ROLE_KEY') ?[.!?à¥¤ã€‚]s|
-'',
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+        ?? Deno.env.get('MYGURU_SUPABASE_SERVICE_ROLE_KEY')
+        ?? '',
     )
 
     // Verify auth
@@ -193,7 +194,19 @@ Deno.env.get('MYGURU_SUPABASE_SERVICE_ROLE_KEY') ?[.!?à¥¤ã€‚]s|
     if (userError || !user) throw new Error('Unauthorized')
 
     const body = await req.json()
-    const { session_id, concept_id, mode, message, input_mode, interrupted, interrupted_at, history: reqHistory } = reqSchema.parse(body)
+    const {
+      session_id,
+      concept_id,
+      mode,
+      message,
+      input_mode,
+      interrupted,
+      interrupted_at,
+      resume_lesson,
+      resume_decision,
+      history: reqHistory,
+    } = reqSchema.parse(body)
+    const isQuickResponse = input_mode === 'voice' || mode === 'student_interruption' || resume_lesson
 
     // Rate limiting (simple DB check: max 30 msgs per minute)
     const oneMinAgo = new Date(Date.now() - 60000).toISOString()
@@ -215,8 +228,7 @@ Deno.env.get('MYGURU_SUPABASE_SERVICE_ROLE_KEY') ?[.!?à¥¤ã€‚]s|
       const stream = new ReadableStream({
         start(controller) {
           const enc = new TextEncoder()
-          controller.enqueue(enc.encode(`data: ${JSON.stringify({ type: 'sentence', index: 0, text: "I'm sorry, I can't engage with that kind of request[.!?à¥¤ã€‚]s|
-Let's get back to our lesson." })}\n\n`))
+          controller.enqueue(enc.encode(`data: ${JSON.stringify({ type: 'sentence', index: 0, text: "I'm sorry, I can't engage with that kind of request. Let's get back to our lesson." })}\n\n`))
           controller.enqueue(enc.encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`))
           controller.close()
         }
@@ -233,20 +245,20 @@ Let's get back to our lesson." })}\n\n`))
         }
 
         try {
-          const apiKey = Deno.env.get('GEMINI_API_KEY')
-    const ai = new GoogleGenAI({ apiKey });!
+          const apiKey = Deno.env.get('GEMINI_API_KEY');
+          if (!apiKey) throw new Error('GEMINI_API_KEY is not configured');
+          const ai = new GoogleGenAI({ apiKey });
           const embedModel = Deno.env.get('GEMINI_EMBED_MODEL') || 'gemini-embedding-001'
           const envGenModel = Deno.env.get('GEMINI_MODEL') || 'gemini-3.5-flash-lite'
           // Route legacy/deprecated models to fast, reliable gemini-3.5-flash-lite
           const defaultGenModel = (envGenModel === 'gemini-2.5-flash' || envGenModel === 'gemini-2.0-flash')
-            [.!?à¥¤ã€‚]s|
+            ?
 'gemini-3.5-flash-lite'
             : envGenModel
 
-          // 1[.!?à¥¤ã€‚]s|
-Embedding generation in parallel with session, profile and history retrieval
+          // Start embedding generation alongside session, profile, and history retrieval.
           let embedPromise = Promise.resolve({ ok: true, json: async () => ({ embedding: { values: [] } }) } as any);
-          if (message) {
+          if (message && !isQuickResponse) {
             embedPromise = fetchGeminiWithRetry(
             `https://generativelanguage.googleapis.com/v1beta/models/${embedModel}:embedContent?key=${apiKey}`,
             {
@@ -284,13 +296,15 @@ supabaseClient.from('messages').select('role, content, created_at').eq('session_
           let conversationHistory: Array<{ role: 'user' | 'model', text: string }> = [];
           if (reqHistory && reqHistory.length > 0) {
             conversationHistory = reqHistory.map((h: any) => ({
-              role: (h.role === 'student' || h.role === 'user') [.!?à¥¤ã€‚]s|
+              role: (h.role === 'student' || h.role === 'user')
+                ?
 'user' : 'model',
               text: h.content,
             }));
           } else if (historyRes?.data && historyRes.data.length > 0) {
             conversationHistory = historyRes.data.reverse().map((m: any) => ({
-              role: (m.role === 'student' || m.role === 'user') [.!?à¥¤ã€‚]s|
+              role: (m.role === 'student' || m.role === 'user')
+                ?
 'user' : 'model',
               text: m.content,
             }));
@@ -327,17 +341,20 @@ function normalizeConceptId(id?: string): string {
           // Fetch mastery and question concurrently
           const masteryPromise = supabaseClient.from('mastery').select('*').eq('student_id', user.id).eq('concept_id', session.concept_id).single();
           const questionPromise = session.current_question_id 
-            [.!?à¥¤ã€‚]s|
+            ?
 supabaseClient.from('question_bank').select('*').eq('id', session.current_question_id).single()
             : Promise.resolve({ data: null });
 
           const [{ data: masteryRow }, { data: q }] = await Promise.all([masteryPromise, questionPromise]);
 
-          let mastery = masteryRow [.!?à¥¤ã€‚]s|
+          let mastery = masteryRow
+            ?
 masteryRow.p_mastery : 0.3
-          let correctStreak = masteryRow [.!?à¥¤ã€‚]s|
+          let correctStreak = masteryRow
+            ?
 masteryRow.correct_streak : 0
-          let difficulty = masteryRow [.!?à¥¤ã€‚]s|
+          let difficulty = masteryRow
+            ?
 masteryRow.difficulty : 'easy'
 
           // Deterministic intent check: if the student is asking a question, this is NOT an answer turn
@@ -350,17 +367,16 @@ masteryRow.difficulty : 'easy'
             isAnswerTurn = true;
           }
 
-          // 2[.!?à¥¤ã€‚]s|
-Vector search retrieval / Direct curriculum fetch
+          // Retrieve relevant course material, with a direct curriculum fallback.
           let chunks: any[] = [];
 
-          if (mode === 'lesson_start' || !message.trim()) {
-            // For lesson_start, immediately pull curriculum chunks directly without vector search delay
+          if (mode === 'lesson_start' || !message.trim() || isQuickResponse) {
+            // Voice questions use direct concept context to avoid waiting for embedding and vector search.
             const { data: defaultChunks } = await supabaseClient
               .from('content_chunks')
               .select('id, concept_id, source_title, page, text')
               .eq('concept_id', session.concept_id)
-              .limit(3);
+              .limit(mode === 'lesson_start' ? 3 : 2);
             chunks = defaultChunks || [];
           } else {
             if (!embedRes.ok) {
@@ -410,8 +426,7 @@ Vector search retrieval / Direct curriculum fetch
           }
 
           if (!chunks || chunks.length === 0) {
-            const fallbackMsg = "I'm not fully sure about this from your course material[.!?à¥¤ã€‚]s|
-Please check your textbook or ask your teacher.";
+            const fallbackMsg = "I'm not fully sure about this from your course material. Please check your textbook or ask your teacher.";
             sendEvent('token', { text: fallbackMsg });
             sendEvent('sentence', { index: 0, text: fallbackMsg });
             sendEvent('done', {});
@@ -421,15 +436,16 @@ Please check your textbook or ask your teacher.";
 
           let contextText = chunks.map((c: any) => `[${c.source_title}, p.${c.page}] ${c.text}`).join('\n\n')
 
-          // 3[.!?à¥¤ã€‚]s|
-Answer Checking (100% deterministic/local logic - no separate Gemini calls)
+          // Answer checking is deterministic and does not require another Gemini call.
           let verdict: 'correct' | 'partial' | 'wrong' = 'wrong'
           if (isAnswerTurn && question) {
             if (question.type === 'numeric') {
-              verdict = checkNumeric(message, question.answer) [.!?à¥¤ã€‚]s|
+              verdict = checkNumeric(message, question.answer)
+                ?
 'correct' : 'wrong'
             } else if (question.type === 'mcq') {
-              verdict = checkMcq(message, question.answer) [.!?à¥¤ã€‚]s|
+              verdict = checkMcq(message, question.answer)
+                ?
 'correct' : 'wrong'
             } else {
               // Deterministic keyword matching for short answers
@@ -443,8 +459,7 @@ Answer Checking (100% deterministic/local logic - no separate Gemini calls)
             }
           }
 
-          // 4[.!?à¥¤ã€‚]s|
-Pedagogy Move (100% deterministic local logic)
+          // Pedagogy selection is deterministic and does not require another Gemini call.
           const pedState: PedagogyState = {
             mastery,
             hintsUsed: session.hints_used,
@@ -461,27 +476,21 @@ Pedagogy Move (100% deterministic local logic)
           sendEvent('meta', {
             move: action.move,
             concept_id: session.concept_id,
-            expression: verdict === 'correct' [.!?à¥¤ã€‚]s|
+            expression: verdict === 'correct'
+              ?
 'celebrate' : 'neutral',
             citations: chunks.map((c: any) => ({ source_title: c.source_title, page: c.page, chunk_id: c.id })),
             p_mastery: mastery
           })
 
-          // 5[.!?à¥¤ã€‚]s|
-Generate Response (exactly ONE generation request with conversational context)
-                    const userLang = body.language || profile?.language || 'en';
-          let langInstruction = '';
-          if (userLang === 'hinglish') {
-             langInstruction = "CRITICAL LANGUAGE INSTRUCTION: You MUST respond naturally in friendly Indian Hinglish (Hindi grammar written in Latin script). Do NOT switch back to English, even if the student speaks English. Keep all technical terms in standard English.";
-          } else if (userLang === 'hi') {
-             langInstruction = "CRITICAL LANGUAGE INSTRUCTION: You MUST respond naturally in Hindi. Do NOT switch to English, even if the student speaks English. Keep all technical terms in standard English.";
-          } else {
-             langInstruction = "CRITICAL LANGUAGE INSTRUCTION: You MUST respond ONLY in English. Do NOT switch to Hinglish or Hindi, even if the student asks a question in Hindi or Hinglish. Your output language MUST remain strict English unless explicitly told to switch languages by the user.";
-          } else if (userLang === 'hi') {
-             langInstruction = "CRITICAL LANGUAGE: The student speaks Hindi[.!?à¥¤ã€‚]s|
-You MUST respond naturally in Hindi[.!?à¥¤ã€‚]s|
-Keep all technical terms (Array, Queue, Stack, Linked List, index, pointer, node, FIFO, LIFO, etc.) in their standard English form.";
-          }
+          // Generate one streamed response with conversation context.
+          const userLang = body.language || profile?.language || 'en';
+          const responseLanguage = resolveResponseLanguage(userLang, message);
+          const langInstruction = responseLanguage === 'hinglish'
+            ? 'Respond in natural, easy-to-understand Indian Hinglish using Hindi grammar in Latin script. Keep computer-science terms in English.'
+            : responseLanguage === 'hi'
+              ? 'Respond in clear, natural Hindi. Keep computer-science terms in English.'
+              : 'Respond in clear, natural English.';
 
           const isFirstTurn = conversationHistory.length === 0;
           const isExplicitGreeting = /^\s*(hi|hello|hey|namaste|pranam|good morning|good afternoon|good evening|salaam)\b/i.test(message.trim());
@@ -492,28 +501,24 @@ Keep all technical terms (Array, Queue, Stack, Linked List, index, pointer, node
 CRITICAL CONVERSATIONAL RULE: This is an ongoing conversation (Turn ${conversationHistory.length + 1}).
 - DO NOT say "Hello", "Hi", "Hey", or introduce yourself.
 - Jump IMMEDIATELY and directly into the explanation or answer.
-- Connect directly to the concept (e.g[.!?à¥¤ã€‚]s|
-start directly with "Array aur queue dono..." or a quick pedagogical bridge like "Samajhte hain:").
+- Connect directly to the concept, for example: "Array aur queue dono..." or "Samajhte hain:".
 `;
           } else if (isExplicitGreeting) {
             greetingGuidance = `
-The student greeted you[.!?à¥¤ã€‚]s|
-Greet them back warmly and briefly in 1 sentence, and ask what concept or question they want to learn today.
+The student greeted you. Greet them warmly in one brief sentence and ask what they want to learn.
 `;
           }
 
+          const isInterruption = mode === 'student_interruption' || interrupted;
           let interruptionGuidance = '';
-          if (mode === 'student_interruption' || interrupted) {
+          if (isInterruption) {
             interruptionGuidance = `
-CLASSROOM INTERRUPTION DIRECTIVE:
-- The student interrupted your explanation during the lesson!
-- You were explaining: "${interrupted_at || 'the concept'}".
-- Student asked / said: "${message}".
-- STEP 1: Answer the student's specific doubt or question directly, clearly, and concisely in 1-2 sentences[.!?à¥¤ã€‚]s|
-Clear up their doubt immediately.
-- STEP 2: Transition smoothly (e.g., "Now, continuing with our lesson:" or "Chalo, aage dekhte hain:") and continue the lesson from where you stopped.
-- CRITICAL: DO NOT restart the whole explanation from the beginning[.!?à¥¤ã€‚]s|
-Continue forward with the next logical point.`;
+INTERRUPTION DIRECTIVE:
+- The student stopped you to ask a new question about "${interrupted_at || 'the lesson'}".
+- Answer only that question directly in at most two short sentences.
+- Do not continue or resume the previous lesson unless the student asks you to.
+- End by asking "${responseLanguage === 'en' ? 'Shall we continue from where we left off?' : responseLanguage === 'hi' ? 'क्या हम वहीं से जारी रखें?' : 'Kya hum wahin se continue karein?'}"
+- Do not add a greeting or any other follow-up question.`;
           }
 
           let currentTurnPrompt = '';
@@ -522,10 +527,8 @@ Continue forward with the next logical point.`;
             currentTurnPrompt = `CLASSROOM INSTRUCTION:
 - You are beginning a new lesson on "${session.concept_id}".
 - DO NOT wait for a question from the student.
-- DO NOT say "Hello" or "Hi"[.!?à¥¤ã€‚]s|
-Start teaching immediately.
-- Begin naturally, e.g[.!?à¥¤ã€‚]s|
-"Let's start with ${session.concept_id}..." or "Chalo, aaj ${session.concept_id} ke baare mein dekhte hain..."
+- Do not greet the student; start teaching immediately.
+- Begin naturally, for example: "Let's start with ${session.concept_id}..." or "Chalo, aaj ${session.concept_id} ke baare mein dekhte hain..."
 - Explain the core idea simply in 2-3 sentences.
 - End by asking a quick check-in question or inviting the student to ask a doubt.
 
@@ -533,21 +536,39 @@ Course Context:
 ${contextText}
 
 ${langInstruction}`;
+          } else if (resume_lesson) {
+            currentTurnPrompt = `The student agreed to continue the lesson.
+- Briefly acknowledge their confirmation, then continue the lesson from immediately after this point: "${interrupted_at || 'the last lesson point'}".
+- Do not repeat the explanation they interrupted.
+- Keep this continuation to at most two short sentences.
+
+Course Context:
+${contextText}
+
+${langInstruction}`;
+          } else if (resume_decision === 'decline') {
+            currentTurnPrompt = `The student declined to continue the paused lesson.
+- Acknowledge briefly in ${responseLanguage === 'hi' ? 'Hindi' : responseLanguage === 'hinglish' ? 'Hinglish' : 'English'}.
+- Do not resume or explain more unless they ask a new question.
+- Keep the response to one short sentence.`;
           } else {
             currentTurnPrompt = `Student message: "${message}"
 
 Course Context:
 ${contextText}
 
-Pedagogy Directive: ${action.move}[.!?à¥¤ã€‚]s|
+Pedagogy Directive: ${action.move}.
 ${action.specialInstruction || ''}
 ${langInstruction}
 ${greetingGuidance}
 ${interruptionGuidance}
-Keep your answer clear, under 4-5 sentences, friendly, and engaging[.!?à¥¤ã€‚]s|
-End with a guiding question if explaining[.!?à¥¤ã€‚]s|
-Use markdown for math/code[.!?à¥¤ã€‚]s|
-Do not reveal the exact answer unless it's a worked example.`;
+${isInterruption
+  ? 'Answer only the interruption question in at most two short sentences. Do not resume the lesson; ask whether to continue from where the lesson stopped.'
+  : resume_lesson
+    ? 'Continue the paused lesson from its stopping point. Keep the response to two short sentences.'
+    : resume_decision === 'decline'
+      ? 'Acknowledge the decision briefly and do not continue the lesson.'
+  : 'Keep the answer friendly and concise (up to three sentences). Use markdown for math/code and end explanations with a brief check-in question.'}`;
           }
 
           const systemInstruction = {
@@ -569,12 +590,17 @@ CORE CONVERSATIONAL BEHAVIOR:
    - When the student asks follow-ups like "iska use kahan hota hai?", "aur example do?", "queue se difference?", refer directly to the prior topic seamlessly.
    - Do NOT treat each message as an isolated new prompt.
 
-4. LANGUAGE & VOCABULARY:
+4. COURSE SCOPE:
+   - This tutor teaches the course topics: Arrays, Linked Lists, Stacks, Queues, their operations, implementations, and basic time/space complexity.
+   - If asked about a topic outside this course, do not guess or provide an unrelated answer. Briefly say it is outside this tutor's current course and offer to help with one of the listed topics.
+   - Do not treat a loosely related word in the course context as evidence that an unrelated question is in scope.
+
+5. LANGUAGE & VOCABULARY:
    - Natural Indian teacher style: warm, concise, clear, and direct.
    - If Hinglish is requested or spoken: reply in natural, authentic Hinglish (Hindi grammar in Latin script).
    - Technical terms (Array, Queue, Stack, Linked List, FIFO, LIFO, index, pointer, node, enqueue, dequeue, push, pop, time complexity, etc.) MUST ALWAYS be kept in English.
 
-4[.!?à¥¤ã€‚]s|
+6.
 BREVITY & PEDAGOGY:
    - Keep answers clear and concise (under 4-5 sentences).
    - If explaining, end with a brief guiding question to check understanding.
@@ -592,7 +618,7 @@ BREVITY & PEDAGOGY:
      <board_code>const x = 10;</board_code>
      <board_erase></board_erase>
    - Example: "Arrays are contiguous memory blocks. <board_array>10, 20, 30</board_array> See how they are sequential?"
-   - Do NOT use markdown code blocks (```) for board content anymore, ONLY use the XML tags above.`
+   - Do not use fenced code blocks for board content; use only the XML tags above.`
             }]
           };
 
@@ -610,7 +636,8 @@ BREVITY & PEDAGOGY:
               model: activeGenModel,
               contents: geminiContents,
               config: {
-                systemInstruction: systemInstruction.parts[0].text
+                systemInstruction: systemInstruction.parts[0].text,
+                maxOutputTokens: isInterruption || resume_lesson ? 160 : 256,
               }
             });
           } catch (err: any) {
@@ -621,7 +648,8 @@ BREVITY & PEDAGOGY:
                 model: activeGenModel,
                 contents: geminiContents,
                 config: {
-                  systemInstruction: systemInstruction.parts[0].text
+                  systemInstruction: systemInstruction.parts[0].text,
+                  maxOutputTokens: isInterruption || resume_lesson ? 160 : 256,
                 }
               });
             } else {
@@ -642,7 +670,10 @@ BREVITY & PEDAGOGY:
               fullResponse += chunkText;
               sentenceBuffer += chunkText;
 
-              if (/[.!?\u0964\u3002]\s/.test(sentenceBuffer)) {
+              const hasSentenceBoundary = /[.!?\u0964\u3002]\s/.test(sentenceBuffer);
+              const hasClauseBoundary = /[,;:]\s/.test(sentenceBuffer)
+                && sentenceBuffer.trim().split(/\s+/).length >= 12;
+              if (hasSentenceBoundary || hasClauseBoundary) {
                 sendEvent('sentence', { index: sentenceIndex++, text: sentenceBuffer.trim() });
                 sentenceBuffer = '';
               }
@@ -663,11 +694,11 @@ BREVITY & PEDAGOGY:
             }
           });
 
-          // 6[.!?à¥¤ã€‚]s|
-Asynchronous DB updates
+          // Persist mastery updates after generating the response.
           if (isAnswerTurn) {
             const newM = updateMastery(mastery, verdict === 'correct')
-            const newStreak = verdict === 'correct' [.!?à¥¤ã€‚]s|
+            const newStreak = verdict === 'correct'
+              ?
 correctStreak + 1 : 0
             
             await supabaseClient.from('mastery').upsert({

@@ -48,10 +48,13 @@ flowchart TD
   - `thinking`: Gaze moves upward and aside in a pensive posture.
   - `speaking`: Conversational arm gesturing and head nods synchronized with speech cadence.
   - `pointing_board`: Outstretched arm pointing towards the digital board on new board events.
-- **Instant Interruption ($<100\text{ms}$):**
-  - Typing in the input, speaking a new turn, or pressing **Stop** immediately halts TTS audio playback, aborts in-flight SSE streams, zeroes avatar mouth shapes, and resumes listening mode.
+- **Voice interruption and echo filtering:**
+  - Partial speech transcripts no longer interrupt the tutor immediately. Clear student questions/doubt/stop cues interrupt after final recognition, while unmatched partial transcripts during tutor speech are treated as likely speaker echo. Voice questions skip embedding/vector search to reduce response latency.
+  - After an interruption answer, the tutor asks whether to continue; a clear "yes/haan" resumes from the saved stopping point.
 - **Natural Indian Hinglish Support:**
-  - Real-time grammatical transcript normalizer disambiguates homophones (e.g. *array* vs *arey*, *queue* vs *kyon* / *q*) while preserving authentic Hindi vocabulary.
+  - Voice recognition uses the browser's Indian English locale, then a local transcript normalizer disambiguates common technical-term misrecognitions (e.g. *array* vs *arey*, *queue* vs *kyon* / *q*). The tutor detects Hinglish questions and replies in natural Hinglish while preserving English technical terms.
+- **Course boundaries:**
+  - The tutor focuses on Arrays, Linked Lists, Stacks, Queues, their operations, and basic time/space complexity. It is instructed to say when a question is outside this course rather than guess.
 - **Adaptive Pedagogy & BKT:**
   - Bayesian Knowledge Tracing tracking concept mastery ($P(L_0) = 0.30$, $P(T) = 0.15$, $P(G) = 0.20$, $P(S) = 0.10$).
   - Pedagogical move policies adapting difficulty, offering worked examples, and adjusting hints based on learner behavior.
@@ -93,6 +96,8 @@ VITE_SUPABASE_URL=https://your-project-ref.supabase.co
 VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
 ```
 
+Use the Project URL and anon/publishable key from **Supabase Project Settings → API**. Do not put the service-role key in this client-side file. Restart `npm run dev` after changing `.env`; if either value is missing, still an example, or malformed, the app will display setup instructions instead of a blank page.
+
 ### 3. Database Migration & Seed
 
 Run the database migrations and seed the question bank and curriculum:
@@ -130,6 +135,8 @@ Deploy the backend tutor streaming turn and TTS functions:
 npx supabase functions deploy tutor-turn --no-verify-jwt
 npx supabase functions deploy tts --no-verify-jwt
 ```
+
+After changing an Edge Function, redeploy it for the changes to take effect in your Supabase project; restarting the Vite dev server only reloads the frontend.
 
 ### 6. Ingest Course Content Chunks & Embeddings
 

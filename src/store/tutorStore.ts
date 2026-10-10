@@ -4,6 +4,8 @@ import { createParser } from 'eventsource-parser';
 import { globalAudioQueue, type TTSAudioResponse } from '@/services/audioQueue';
 import { globalSpeechService, isLikelyTeacherEcho, stripTeacherEcho } from '@/services/speechRecognition';
 import { normalizeTranscript } from '@/services/transcriptNormalizer';
+import { getResumeDecision } from '@/services/resumeDecision';
+import { appendSpokenTranscript, getUnplayedSegments } from '@/services/spokenTranscript';
 
 export type Message = {
   id: string;
@@ -49,7 +51,9 @@ export type SpeakerState = 'IDLE' | 'LISTENING' | 'STUDENT_SPEAKING' | 'THINKING
 
 type TutorStore = {
   sessionId: string | null;
+  studentLanguage: 'en' | 'hi' | 'hinglish';
   messages: Message[];
+  spokenTranscripts: Record<string, string>;
   board: BoardEvent[];
   citations: Citation[];
   selectedCitation: Citation | null;
@@ -69,6 +73,7 @@ type TutorStore = {
   isSpeechSupported: boolean;
   hasInterrupted: boolean;
   resumeTeaching: boolean;
+  awaitingResumeConfirmation: boolean;
   voiceModeActive: boolean;
   lessonProgress: LessonProgress;
   currentMove: string | null;
@@ -83,6 +88,7 @@ type TutorStore = {
   
   // Actions
   setSessionId: (id: string) => void;
+  setStudentLanguage: (language: 'en' | 'hi' | 'hinglish') => void;
   startLesson: (conceptId: string) => Promise<void>;
   sendMessage: (text: string, conceptId: string, inputMode?: 'text' | 'voice', wasInterrupted?: boolean, mode?: 'chat' | 'lesson_start' | 'student_interruption') => Promise<void>;
   interruptTutor: () => void;
@@ -95,6 +101,10 @@ type TutorStore = {
 
 let activeAbortController: AbortController | null = null;
 let currentConceptId: string = '';
+let activeTutorMessageId: string | null = null;
+let activeSpeechSegments: string[] = [];
+let pausedTutorAnswer: { messageId: string; segments: string[] } | null = null;
+let preservePausedTutorAnswer = false;
 
 export function normalizeConceptId(id?: string): string {
   if (!id) return 'arrays_1';
@@ -106,6 +116,12 @@ export function normalizeConceptId(id?: string): string {
   if (['stacks', 'stack', 'stacks_1', 'stacks1'].includes(clean)) return 'stacks_1';
   if (['queues', 'queue', 'queues_1', 'queues1'].includes(clean)) return 'queues_1';
   return clean;
+}
+
+function getStoredStudentLanguage(): 'en' | 'hi' | 'hinglish' {
+  if (typeof window === 'undefined') return 'en';
+  const language = window.localStorage.getItem('myguru-language');
+  return language === 'hi' || language === 'hinglish' ? language : 'en';
 }
 
 export const useTutorStore = create<TutorStore>((set, get) => {
@@ -121,6 +137,15 @@ export const useTutorStore = create<TutorStore>((set, get) => {
         currentCaption: text,
         isPlayingAudio: true,
         speakerState: 'TEACHER_SPEAKING',
+        ...(activeTutorMessageId ? {
+          spokenTranscripts: {
+            ...state.spokenTranscripts,
+            [activeTutorMessageId]: appendSpokenTranscript(
+              state.spokenTranscripts[activeTutorMessageId] ?? '',
+              text,
+            ),
+          },
+        } : {}),
         lessonProgress: {
           ...state.lessonProgress,
           status: 'teaching',
@@ -154,7 +179,9 @@ export const useTutorStore = create<TutorStore>((set, get) => {
 
   return {
     sessionId: null,
+    studentLanguage: getStoredStudentLanguage(),
     messages: [],
+    spokenTranscripts: {},
     board: [],
     citations: [],
     selectedCitation: null,
@@ -173,6 +200,7 @@ export const useTutorStore = create<TutorStore>((set, get) => {
     isSpeechSupported: globalSpeechService.isSupported(),
     hasInterrupted: false,
     resumeTeaching: false,
+    awaitingResumeConfirmation: false,
     voiceModeActive: false,
     lessonProgress: {
       conceptId: '',
@@ -198,9 +226,14 @@ export const useTutorStore = create<TutorStore>((set, get) => {
       }
       globalAudioQueue.interrupt();
       globalSpeechService.stop();
+      activeTutorMessageId = null;
+      activeSpeechSegments = [];
+      pausedTutorAnswer = null;
+      preservePausedTutorAnswer = false;
       set({
         sessionId: id,
         messages: [],
+        spokenTranscripts: {},
         board: [],
         citations: [],
         selectedCitation: null,
@@ -215,6 +248,7 @@ export const useTutorStore = create<TutorStore>((set, get) => {
         voiceModeActive: false,
         hasInterrupted: false,
         resumeTeaching: false,
+        awaitingResumeConfirmation: false,
         lessonProgress: {
           conceptId: '',
           step: 0,
@@ -233,6 +267,11 @@ export const useTutorStore = create<TutorStore>((set, get) => {
       });
     },
 
+    setStudentLanguage: (language) => {
+      window.localStorage.setItem('myguru-language', language);
+      set({ studentLanguage: language });
+    },
+
     clearBoard: () => set({ board: [] }),
     setSelectedCitation: (citation) => set({ selectedCitation: citation }),
     clearMicError: () => set({ micError: null }),
@@ -241,6 +280,17 @@ export const useTutorStore = create<TutorStore>((set, get) => {
       const state = get();
       // Capture the exact sentence being uttered when interrupted
       const interruptedSentence = state.currentCaption || state.lessonProgress.lastSpokenSentence;
+
+      if (!preservePausedTutorAnswer && activeTutorMessageId && activeSpeechSegments.length > 0) {
+        const firstUnplayedIndex = globalAudioQueue.getNextPlayIndex();
+        const remainingSegments = getUnplayedSegments(activeSpeechSegments, firstUnplayedIndex);
+        if (remainingSegments.length > 0) {
+          pausedTutorAnswer = {
+            messageId: activeTutorMessageId,
+            segments: remainingSegments,
+          };
+        }
+      }
 
       // Abort active fetch immediately (<100ms)
       if (activeAbortController) {
@@ -258,6 +308,7 @@ export const useTutorStore = create<TutorStore>((set, get) => {
         currentCaption: '',
         hasInterrupted: true,
         resumeTeaching: true,
+        awaitingResumeConfirmation: false,
         audioLevel: 0,
         ttsStatus: 'idle',
         lessonProgress: {
@@ -399,14 +450,83 @@ export const useTutorStore = create<TutorStore>((set, get) => {
     },
 
     sendMessage: async (text, conceptId, inputMode = 'text', wasInterrupted = false, mode = 'chat') => {
-      const { sessionId, messages, hasInterrupted, resumeTeaching, isPlayingAudio, loading } = get();
+      const {
+        sessionId,
+        studentLanguage,
+        messages,
+        hasInterrupted,
+        resumeTeaching,
+        isPlayingAudio,
+        loading,
+        awaitingResumeConfirmation,
+      } = get();
       if (!sessionId) return;
 
       const wasActive = isPlayingAudio || loading;
-      const isInterruptedTurn = wasInterrupted ?? (wasActive || hasInterrupted || resumeTeaching);
+      const hasQueuedAudio = globalAudioQueue.getQueueSize() > 0;
+      const isInterruptedTurn = wasInterrupted || wasActive || hasQueuedAudio || hasInterrupted || resumeTeaching;
+      const resumeDecision = awaitingResumeConfirmation ? getResumeDecision(text) : null;
+      const resumeLesson = resumeDecision === 'continue';
       const interruptedSentence = get().lessonProgress.interruptedSentence;
 
-      get().interruptTutor();
+      if (wasActive || hasQueuedAudio) {
+        get().interruptTutor();
+      }
+
+      if (resumeLesson && pausedTutorAnswer) {
+        const answerToResume = pausedTutorAnswer;
+        pausedTutorAnswer = null;
+        preservePausedTutorAnswer = false;
+        activeTutorMessageId = answerToResume.messageId;
+        activeSpeechSegments = [...answerToResume.segments];
+        globalAudioQueue.interrupt();
+        globalAudioQueue.resetSequence();
+        set((state) => ({
+          messages: [...state.messages, {
+            id: Date.now().toString(),
+            role: 'student',
+            content: text,
+          }],
+          loading: false,
+          error: null,
+          currentCaption: '',
+          isPlayingAudio: false,
+          speakerState: 'THINKING',
+          awaitingResumeConfirmation: false,
+          hasInterrupted: false,
+          resumeTeaching: true,
+          lessonProgress: {
+            ...state.lessonProgress,
+            status: 'resuming',
+            interruptedSentence: null,
+          },
+        }));
+
+        answerToResume.segments.forEach((segment, index) => {
+          const ttsPromise = supabase.functions
+            .invoke<TTSAudioResponse>('tts', {
+              body: { text: segment.trim(), language: studentLanguage },
+            })
+            .then(({ data, error }) => {
+              if (error) throw error;
+              if (!data?.audio_base64 || !data.mime_type || !data.sample_rate) {
+                throw new Error('TTS returned an invalid audio response.');
+              }
+              return data;
+            })
+            .catch((err: Error) => {
+              set({ ttsStatus: 'error', ttsError: err.message });
+              throw err;
+            });
+          globalAudioQueue.enqueue(index, segment, ttsPromise);
+        });
+        return;
+      }
+
+      if (resumeDecision === 'decline') {
+        pausedTutorAnswer = null;
+        preservePausedTutorAnswer = false;
+      }
       const studentMsgId = Date.now().toString();
       const tutorMsgId = (Date.now() + 1).toString();
 
@@ -423,11 +543,19 @@ export const useTutorStore = create<TutorStore>((set, get) => {
 
       set({
         messages: newMessages as any,
+        spokenTranscripts: {
+          ...get().spokenTranscripts,
+          [tutorMsgId]: '',
+        },
         loading: true,
         error: null,
         currentCaption: '',
         isPlayingAudio: false,
         voiceModeActive: true,
+        awaitingResumeConfirmation: false,
+        lessonProgress: resumeLesson
+          ? { ...get().lessonProgress, status: 'resuming' }
+          : get().lessonProgress,
         timeToFirstToken: null,
         timeToFirstAudio: null,
       });
@@ -443,6 +571,9 @@ export const useTutorStore = create<TutorStore>((set, get) => {
       
       const abortController = new AbortController();
       activeAbortController = abortController;
+      activeTutorMessageId = tutorMsgId;
+      activeSpeechSegments = [];
+      preservePausedTutorAnswer = Boolean(pausedTutorAnswer);
 
       // Unlock browser audio context on user interaction
       globalAudioQueue.initContext();
@@ -467,19 +598,7 @@ export const useTutorStore = create<TutorStore>((set, get) => {
           throw new Error('Could not establish an authenticated session. Please reload the page.');
         }
 
-        // Get student's preferred language for voice recognition & TTS
-        let studentLang: 'en' | 'hi' | 'hinglish' = 'en';
-        if (session.user?.id) {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('language')
-            .eq('id', session.user.id)
-            .single();
-          if (profile?.language) {
-            studentLang = profile.language as any;
-          }
-        }
-
+        const studentLang = studentLanguage;
         globalSpeechService.setLanguage(studentLang);
 
         const response = await fetch(
@@ -499,6 +618,8 @@ export const useTutorStore = create<TutorStore>((set, get) => {
               input_mode: inputMode,
               interrupted: isInterruptedTurn,
               interrupted_at: interruptedSentence || undefined,
+              resume_lesson: resumeLesson,
+              resume_decision: resumeDecision || undefined,
               language: studentLang,
               history: messages
                 .filter((m) => m.content && m.content.trim())
@@ -545,6 +666,7 @@ export const useTutorStore = create<TutorStore>((set, get) => {
               console.log(`[Perf] [Req:${requestId}] Sentence #${sentenceIndex} emitted at +${chunkMs}ms: "${sentenceText}"`);
 
               if (sentenceText && sentenceText.trim()) {
+                activeSpeechSegments[sentenceIndex] = sentenceText.trim();
                 set({ ttsStatus: 'generating' });
                 const ttsPromise = (async (): Promise<TTSAudioResponse> => {
                   try {
@@ -630,11 +752,14 @@ export const useTutorStore = create<TutorStore>((set, get) => {
                 loading: false,
                 resumeTeaching: false,
                 hasInterrupted: false,
+                awaitingResumeConfirmation: isInterruptedTurn && !resumeLesson && mode !== 'lesson_start',
                 lessonProgress: {
                   ...state.lessonProgress,
                   step: state.lessonProgress.step + 1,
-                  status: 'teaching',
-                  interruptedSentence: null,
+                  status: isInterruptedTurn && !resumeLesson ? 'interrupted' : 'teaching',
+                  interruptedSentence: isInterruptedTurn && !resumeLesson
+                    ? interruptedSentence
+                    : null,
                 },
               }));
             }

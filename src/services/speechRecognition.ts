@@ -24,13 +24,13 @@ export function isLikelyTeacherEcho(
 
   const studentWords = cleanStudent.split(' ').filter(w => w.length > 1);
 
-  // Identify if the student said any "strong" interruption/question words that the teacher DID NOT say.
+  // Require a clear question or interruption cue while tutor audio is active.
   const interruptionWords = [
-    'wait', 'why', 'what', 'how', 'stop', 'pause', 'ruko', 'arre', 'suno', 'minute', 'second', 'hold', 'listen', 
-    'excuse', 'sorry', 'doubt', 'kya', 'kyun', 'kyu', 'kaise', 'kab', 'kahan', 'samjhao', 'batao', 'mujhe', 'lekin', 
-    'par', 'please', 'question', 'nahi', 'no', 'not', 'repeat', 'clear', 'again', 'matlab', 'meaning',
-    'sir', 'madam', 'teacher', 'explain', 'understand', 'samajh', 'phir', 'difference', 'example', 'udharan',
-    'hello', 'hi', 'aur', 'and', 'but', 'can', 'you', 'if', 'agar', 'toh', 'then', 'so', 'yes', 'haan', 'ok', 'okay', 'accha', 'acha'
+    'wait', 'why', 'what', 'how', 'stop', 'pause', 'ruko', 'suno', 'minute', 'second', 'hold', 'listen',
+    'excuse', 'sorry', 'doubt', 'kya', 'kyun', 'kyu', 'kaise', 'kab', 'kahan', 'samjhao', 'batao', 'mujhe', 'lekin',
+    'please', 'question', 'nahi', 'no', 'not', 'repeat', 'clear', 'again', 'matlab', 'meaning',
+    'explain', 'understand', 'samajh', 'difference', 'example', 'udharan', 'help',
+    'yes', 'yeah', 'yep', 'haan', 'han', 'ha', 'bilkul', 'okay', 'ok', 'sure'
   ];
   
   if (studentWords.length === 0) return true; // Single letter blips during teacher speech are echo/noise
@@ -44,6 +44,10 @@ export function isLikelyTeacherEcho(
   }
 
   const overlapRatio = matchingWordsCount / studentWords.length;
+
+  if (/[?؟]\s*$/.test(studentTranscript) && overlapRatio < 0.35) {
+    return false;
+  }
   
   let hasUniqueInterruptionWord = false;
   for (const word of studentWords) {
@@ -53,7 +57,7 @@ export function isLikelyTeacherEcho(
     }
   }
 
-  // If the student used a strong question word the teacher didn't use, accept it immediately.
+  // A clear interruption cue is stronger evidence than transcript overlap.
   if (hasUniqueInterruptionWord) {
     return false;
   }
@@ -63,14 +67,9 @@ export function isLikelyTeacherEcho(
     return true;
   }
 
-  // If there's no high overlap, but they only uttered 1-2 garbled words, it's just background noise.
-  if (studentWords.length <= 2) {
-    return true;
-  }
-
-  // If they said a full sentence (3+ words) that DOES NOT heavily overlap with the teacher, 
-  // it's a real student statement! (e.g., "Array is like a list")
-  return false;
+  // Unmatched partial transcripts are often the speaker audio misrecognized by Web Speech.
+  // Do not stop the tutor without a clear question/doubt/stop cue.
+  return true;
 }
 
 export function stripTeacherEcho(
@@ -233,22 +232,18 @@ export class BrowserSpeechService {
             return;
           }
 
-          // Interrupt the tutor immediately on first detected genuine student speech (<100ms)
-          if (!this.speechDetected) {
-            this.speechDetected = true;
-            this.callbacks.onSpeechStart?.();
-          }
+          this.speechDetected = true;
 
           // Emit normalized and raw previews so user sees proper technical terms in real-time
           const displayNormalized = normalizeTranscript(rawCombined);
           this.callbacks.onInterimTranscript?.(displayNormalized, rawCombined);
 
-          // Reset silence timer: adaptive 1500ms if final text exists, 1800ms if only interim text
+          // Submit soon after speech ends while allowing the browser time to finalize recognition.
           if (this.silenceTimer) {
             clearTimeout(this.silenceTimer);
           }
 
-          const silenceMs = this.finalTranscript.length > 0 ? 800 : 1200;
+          const silenceMs = this.finalTranscript.length > 0 ? 350 : 650;
           this.silenceTimer = setTimeout(() => {
             this.finalizeAndSend();
           }, silenceMs);
@@ -366,6 +361,10 @@ export class BrowserSpeechService {
         this.restartSession();
       }
       return;
+    }
+
+    if (this.speechDetected) {
+      this.callbacks.onSpeechStart?.();
     }
 
     this.isSubmitting = true;

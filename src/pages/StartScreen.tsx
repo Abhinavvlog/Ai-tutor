@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
+import { useTutorStore } from '@/store/tutorStore';
 
 export function StartScreen() {
   const [displayName, setDisplayName] = useState('');
@@ -9,6 +10,7 @@ export function StartScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+  const setStudentLanguage = useTutorStore((state) => state.setStudentLanguage);
 
   const handleStart = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,6 +35,8 @@ export function StartScreen() {
       });
       
       if (profileError) throw profileError;
+
+      setStudentLanguage(language);
 
       // 3. Navigate to progress or first concept
       // The spec says /progress or /learn/:conceptId
